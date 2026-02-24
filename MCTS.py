@@ -61,7 +61,7 @@ class MCTS():
 
     def backpropagate(self, search_path: list[MCTSNode], value: float):
         for node in reversed(search_path):
-            node.value_sum += value*(node.to_play == self.to_play)
+            node.value_sum += value
             node.visit_count += 1
             value = -value
 
@@ -89,7 +89,7 @@ class MCTS():
         # Disable gradient tracking for massive speedup during self-play
         with torch.no_grad():
             encoding = self.nn_body(state_tensor)
-            policy_logits = self.policy_head(encoding)
+            policy_logits = self.policy_head(encoding, legal_mask)
             value_tensor = self.value_head(encoding)
 
         # Extract the scalar value for backpropagation
@@ -102,19 +102,8 @@ class MCTS():
 
         for move, prob in action_probs.items():
             # Get the new repetition state for this child (using our O(1) logic)
-            child_rep_counter, child_hash, is_twofold, is_threefold = expand_node(search_board, move, leaf_node.rep_counter)
+            child_node = expand_node(search_board, prior=prob, parent=leaf_node, move=move, parent_rep_counter=leaf_node.rep_counter)
 
-            search_board.push(move)
-            child_hash = chess.polyglot.zobrist_hash(search_board)
-
-            # Instantiate the lightweight child node
-            child_node = MCTSNode(
-                parent=leaf_node,
-                board=search_board,
-                rep_counter=child_rep_counter[child_hash],
-                move_from_parent=move,
-                prior=prob
-            )
             # Attach it to the tree
             leaf_node.children[move] = child_node
 
@@ -125,8 +114,7 @@ class MCTS():
         pass
 
 
-def expand_node(global_board: chess.Board, move: chess.Move, parent_rep_counter: collections.Counter) \
-        -> tuple[int, collections.Counter, bool, bool]:
+def expand_node(global_board: chess.Board, parent: MCTSNode, move: chess.Move, parent_rep_counter: collections.Counter, prior) :
     """
     Executes a move and calculates the new repetition state in O(1) time.
     :returns: child_hash, child_counter, is_twofold, is_threefold
@@ -139,51 +127,49 @@ def expand_node(global_board: chess.Board, move: chess.Move, parent_rep_counter:
     # 2. Make the move
     global_board.push(move)
 
-    child_hash = polyglot.zobrist_hash(global_board)
 
     # 3. The Golden Rule: Clear the dictionary on irreversible moves!
     if global_board.halfmove_clock == 0:
+        #TODO: this doesn't account for castling (needed for threefold repetition), but we'll leave it for now
         child_counter.clear()
 
     # 4. Generate the current state's unique integer
     current_hash = polyglot.zobrist_hash(global_board)
 
     # 5. Increment the count for this specific position
+    # we are explicitly counting repeated positions, not nodes, so it is ok that we don't include
     child_counter[current_hash] += 1
 
-    # 6. Extract the repetition flag for your Neural Network tensor
-    rep_count = child_counter[current_hash]
-    is_twofold = (rep_count == 2)
-    is_threefold = (rep_count >= 3)
+    to_play = 1 if global_board.turn == chess.WHITE else -1
+    child = MCTSNode(prior=prior, physical_hash=current_hash, halfmove_clock=global_board.halfmove_clock, to_play=to_play, rep_counter=child_counter, parent=parent, move_from_parent=move)
 
     # Undo the move to leave the original board intact for other branches
     global_board.pop()
 
-    return child_hash, child_counter, is_twofold, is_threefold
+    return child
 
 
 class MCTSNode(object):
-    def __init__(self, *, prior: float, board: chess.Board, rep_counter: collections.Counter, parent: MCTSNode,
-                 move_from_parent: MCTSNode):
+    def __init__(self, *, prior: float, physical_hash: int, halfmove_clock: int, to_play: int, rep_counter: collections.Counter, parent: MCTSNode,
+                 move_from_parent: chess.Move):
         self.parent = parent
         self.move_from_parent = move_from_parent
         self.children = {}
 
         # Calculate the unique state identifiers once upon creation
-        physical_hash = chess.polyglot.zobrist_hash(board)
-        halfmove = board.halfmove_clock
-        self._state_tuple = encoder.get_state_key(board)
+        self.physical_hash = physical_hash
+        self.halfmove_clock = halfmove_clock
+
+
+        #TODO: problem; we are trying to hash with the repcount, but we need the hash to get the repcount unless it is passed!
+        self._hash = hash((self.physical_hash, self.halfmove_clock, rep_counter[self.physical_hash]))
 
         self.prior = prior
         self.visit_count = 0
-        self.to_play = 1 if board.turn == chess.WHITE else -1
+        self.to_play = to_play
         self.value_sum = 0
-        self.rep_counter = rep_counter
+        self.rep_counter = rep_counter # counter for visited nodes in the tree
 
-        if parent:
-            self.rep_counter = parent.rep_counter.copy()
-        else:
-            self.rep_counter = collections.Counter()
 
     def expanded(self):
         return len(self.children)
@@ -194,7 +180,7 @@ class MCTSNode(object):
         return self.value_sum / self.visit_count
 
     def __hash__(self):
-        return hash(self._state_tuple)
+        return self._hash
 
     def __eq__(self, other):
 

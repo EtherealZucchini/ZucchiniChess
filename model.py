@@ -51,7 +51,34 @@ class ChessNetValue(nn.Module):
         v = torch.tanh(self.value_fc(v))  # Squashes output to [-1, 1]
         return v
 
+
 class ChessNetPolicy(nn.Module):
-    def __init__(self, num_res_blocks=4):
+    def __init__(self, channels=64):
         super().__init__()
-        self.policy_conv = nn.Conv2d(64, 73, kernel_size=3, padding=1)
+        # The "additional rectified, batch-normalized convolutional layer"
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
+
+        # The "final convolution of 73 filters"
+        # A 1x1 kernel is used here to project the channels down without altering spatial data
+        self.conv2 = nn.Conv2d(channels, 73, kernel_size=1)
+
+    def forward(self, x, legal_moves_mask):
+        print(x.shape)
+        # 1. Pass through the hidden policy layer
+        x = F.relu(self.bn1(self.conv1(x)))
+
+        # 2. Get raw logits for all 73 planes (Shape: Batch, 73, 8, 8)
+        logits = self.conv2(x)
+
+        # 3. Flatten the spatial dimensions to a 1D vector per batch item (73 * 8 * 8 = 4672)
+        logits = logits.view(logits.size(0), -1)
+
+        # 4. Apply the Legal Move Mask BEFORE Softmax
+        # legal_moves_mask should be a boolean tensor of shape (Batch, 4672)
+        logits = logits.masked_fill(~legal_moves_mask, -1e9)
+
+        # 5. Softmax normalizes the remaining legal moves to sum to 1.0
+        policy = F.softmax(logits, dim=1)
+
+        return policy

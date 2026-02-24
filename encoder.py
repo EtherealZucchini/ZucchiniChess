@@ -1,6 +1,7 @@
 import torch
 import chess
 import numpy as np
+import model
 
 
 def board_to_tensor(board):
@@ -55,6 +56,7 @@ def get_state_key(board) -> tuple[int, int, int]:
     """
     Creates a perfectly unique MCTS key combining the physical state
     (Zobrist), the 50-move rule, and the repetition count.
+    :param board: chess board
     """
     physical_hash: int = polyglot.zobrist_hash(board)
     halfmove_clock: int = board.halfmove_clock
@@ -140,4 +142,19 @@ def get_legal_move_mask(board):
         mask[flat_index] = True
 
     return mask
+
+
+def decode_policy(policy_tensor, board):
+    """
+    Takes the (4672,) policy tensor and returns a dictionary of {chess.Move: probability}
+    """
+    action_probs = {}
+    for move in board.legal_moves:
+        plane_idx = move_to_plane(move)
+        flat_index = (plane_idx * 64) + move.from_square
+
+        # Extract the probability and add it to our dictionary
+        action_probs[move] = policy_tensor[0, flat_index].item()
+
+    return action_probs
 
