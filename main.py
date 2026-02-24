@@ -15,7 +15,7 @@ def play_match(mcts: MCTS):
 
     while not board.is_game_over(claim_draw=True):
         # 1. MCTS runs its 800 simulations
-        print(f"Thinking for {board.turn}... ", end="", flush=True)
+        print(f"Thinking for {"WHITE" if board.turn == chess.WHITE else "BLACK"}... ", end="", flush=True)
         best_move = mcts.search(board)
 
         # 2. Apply the chosen move to the physical board
