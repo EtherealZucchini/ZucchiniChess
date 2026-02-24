@@ -4,8 +4,7 @@ import torch
 import torch.nn.functional as F
 
 import encoder
-from model import ChessNet
-
+from model import ChessNetBody, ChessNetValue, ChessNetPolicy
 
 if __name__ == '__main__':
     if torch.cuda.is_available():
@@ -13,9 +12,17 @@ if __name__ == '__main__':
     else:
         device = torch.device('cpu')
 
-    m = ChessNet().to(device)
+    body = ChessNetBody().to(device)
+    value = ChessNetValue().to(device)
+    policy = ChessNetPolicy().to(device)
     board = chess.Board()
-    state = encoder.board_to_tensor(board).to(device)
+    print(board.fen())
+
+    state = encoder.board_to_tensor(board).view(-1, 21, 8, 8).to(device)
     print(state.shape)
-    fwd = m.forward(state)
-    print(fwd)
+    fwd = body.forward(state)
+    v = value.forward(fwd)
+    print(v)
+
+    key = encoder.get_state_key(board)
+    print(key)
