@@ -10,15 +10,11 @@ import chess.polyglot as polyglot
 
 class MCTS:
     def __init__(self, *,
-                 body: nn.Module,
-                 value_head: nn.Module,
-                 policy_head: nn.Module,
-                 num_simulations=200,
+                 nn: nn.Module,
+                 num_simulations=800,
                  max_turns=200,
                  device='cuda'):
-        self.nn_body = body.to(device)
-        self.policy_head = policy_head.to(device)
-        self.value_head = value_head.to(device)
+        self.nn = nn
         self.num_simulations = num_simulations
         self.transposition_table = {}
         self.device = device
@@ -84,7 +80,6 @@ class MCTS:
         return current_node, search_path
 
     def backpropagate(self, search_path: list[MCTSNode], value: float):
-        if len(search_path) >1: print(len(search_path))
 
         for node in reversed(search_path):
             node.value_sum += value
@@ -118,9 +113,7 @@ class MCTS:
 
         # Disable gradient tracking for massive speedup during self-play
         with torch.no_grad():
-            encoding = self.nn_body(state_tensor)
-            policy_logits = self.policy_head(encoding, legal_mask)
-            value_tensor = self.value_head(encoding)
+            value_tensor, policy_logits = self.nn(state_tensor, legal_mask)
 
         # Extract the scalar value for backpropagation
         value = value_tensor.item()

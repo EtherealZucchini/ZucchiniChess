@@ -3,7 +3,7 @@ import torch
 
 import MCTS
 import encoder
-from model import ChessNetBody, ChessNetValue, ChessNetPolicy
+from model import ChessNet
 
 
 def play_match(mcts: MCTS):
@@ -64,11 +64,10 @@ if __name__ == "__main__":
     else:
         device = torch.device('cpu')
 
-    body = ChessNetBody().to(device)
-    value = ChessNetValue().to(device)
-    policy = ChessNetPolicy().to(device)
+    nn = ChessNet().to(device)
+    nn.load_state_dict(torch.load("chessnet_v1.pth"))
     board = chess.Board()
     print(board.fen())
 
-    mcts = MCTS.MCTS(body=body, policy_head=policy, value_head=value)
+    mcts = MCTS.MCTS(nn=nn)
     play_match(mcts)

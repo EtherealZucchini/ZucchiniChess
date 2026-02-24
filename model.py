@@ -92,7 +92,7 @@ class ChessNet(nn.Module):
         self.policy = ChessNetPolicy(channels=64)
 
     def forward(self, x, legal_moves_mask):
-        latent = self.body(x, legal_moves_mask)
+        latent = self.body(x)
         value = self.value(latent)
         policy = self.policy(latent, legal_moves_mask)
         return value, policy
