@@ -17,9 +17,9 @@ def play_match(mcts: MCTS):
         # 1. MCTS runs its 800 simulations
         print(f"Thinking for {"WHITE" if board.turn == chess.WHITE else "BLACK"}... ", end="", flush=True)
         best_move = mcts.search(board)
-
-        # 2. Apply the chosen move to the physical board
         board.push(best_move)
+        mcts.update_with_move(best_move)  # Keep the tree synced!
+
 
         # 3. Display the board state
         print(f"Played {best_move}")

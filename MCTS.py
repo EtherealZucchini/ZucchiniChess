@@ -9,19 +9,21 @@ import torch.nn as nn
 import chess.polyglot as polyglot
 
 class MCTS:
-    def __init__(self, *, body: nn.Module, value_head: nn.Module, policy_head: nn.Module, num_simulations=800, device='cuda'):
+    def __init__(self, *, body: nn.Module, value_head: nn.Module, policy_head: nn.Module, num_simulations=50, device='cuda'):
         self.nn_body = body.to(device)
         self.policy_head = policy_head.to(device)
         self.value_head = value_head.to(device)
         self.num_simulations = num_simulations
-        self.transposition_table = {}  # Your global cache of MCTSNodes
+        self.transposition_table = {}
         self.device = device
+        self.root: MCTSNode | None = None
 
     def search(self, initial_board: chess.Board):
         """
         The main entry point. Runs the simulation loop and returns the best move.
         """
         # Create the root node for the current real-world board state
+
         root_node: MCTSNode = self._get_or_create_node(initial_board)
 
         for _ in range(self.num_simulations):
@@ -86,6 +88,8 @@ class MCTS:
         # 1. TERMINAL CHECK: Is the game over?
         # claim_draw=True forces python-chess to recognize 50-move and 3-fold rules
         if leaf_node.rep_counter[leaf_node.physical_hash] >= 3 or search_board.halfmove_clock >= 100:
+            # TODO: I think it doesn't matter outside the training phase,
+            #  but since we return immediately the NN never sees a threefold repetition state, check this
             return 0.0
         outcome = search_board.outcome(claim_draw=False)
         if outcome is not None:
@@ -98,7 +102,7 @@ class MCTS:
 
         # 2. EVALUATE: Query the Neural Network
         # Convert the python-chess board into our 19-plane tensor
-        state_tensor = encoder.board_to_tensor(search_board).unsqueeze(0).to(self.device) # Add batch dimension
+        state_tensor = encoder.board_to_tensor(search_board, leaf_node).unsqueeze(0).to(self.device) # Add batch dimension
         legal_mask = encoder.get_legal_move_mask(search_board).unsqueeze(0).to(self.device)
 
         # Disable gradient tracking for massive speedup during self-play
@@ -125,12 +129,41 @@ class MCTS:
         # 4. Return the predicted value to be sent up the tree
         return value
 
+    def update_with_move(self, move: chess.Move):
+        """
+        Steps the MCTS root forward along the played move, preserving history.
+        """
+        if self.root is not None and move in self.root.children:
+            self.root = self.root.children[move]
+            self.root.parent = None  # Sever the parent link to free memory
+        else:
+            # If the move wasn't in our tree (e.g., turn 1, or an unsearched opponent move),
+            # we force a hard reset.
+            self.root = None
 
-    def _get_or_create_node(self, initial_board):
-        #Todo: implement getting (if node exists for board)
+    def _get_or_create_node(self, initial_board: chess.Board):
+        # 1. If we already persisted the tree, just use it!
+        if self.root is not None:
+            return self.root
+
+        # 2. Otherwise, we are starting from a blank slate
         physical_hash = polyglot.zobrist_hash(initial_board)
+        root_counter = collections.Counter()
+        root_counter[physical_hash] = 1
 
-        root = MCTSNode(prior=1, physical_hash=physical_hash, halfmove_clock=initial_board.halfmove_clock, to_play=1, rep_counter=collections.Counter(), parent=None, move_from_parent=None)
+        # NOTE: If you resume a game from a mid-game PGN, an empty Counter() here
+        # won't catch repetitions from before the engine took over.
+        # But for from-scratch games, this is perfect.
+        root = MCTSNode(
+            prior=1.0,
+            physical_hash=physical_hash,
+            halfmove_clock=initial_board.halfmove_clock,
+            to_play=1 if initial_board.turn == chess.WHITE else -1,
+            rep_counter=root_counter,
+            parent=None,
+            move_from_parent=None
+        )
+        self.root = root
         return root
 
 
@@ -165,7 +198,6 @@ def expand_node(global_board: chess.Board, parent: MCTSNode, move: chess.Move, p
 
     # Undo the move to leave the original board intact for other branches
     global_board.pop()
-    parent.children[move] = child
 
     return child
 
@@ -190,6 +222,12 @@ class MCTSNode(object):
         self.value_sum = 0
         self.rep_counter = rep_counter # counter for visited nodes in the tree
 
+    def rep_count(self):
+        """
+        Helper function to calculate get the number of repetitions using own physical hash
+        :return:
+        """
+        return self.rep_counter[self.physical_hash]
 
     def expanded(self):
         return len(self.children)

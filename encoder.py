@@ -1,10 +1,11 @@
 import torch
 import chess
 import numpy as np
-import model
+
+import MCTS
 
 
-def board_to_tensor(board):
+def board_to_tensor(board, node: MCTS.MCTSNode):
     # 21 layers: 12 (pieces) + 1 (turn) + 4 (castling) + 1 (50-move) + 1 (en passant) + 2 (repetition)
     tensor = np.zeros((21, 8, 8), dtype=np.float32)
 
@@ -38,15 +39,16 @@ def board_to_tensor(board):
         row, col = divmod(board.ep_square, 8)
         tensor[18, row, col] = 1.0
 
-    # Layer 19: First Repetition (Warning: One more time makes it a draw)
-    # is_repetition(2) means the current position has now appeared twice.
-    if board.is_repetition(2):
-        tensor[19, :, :] = 1.0
+    if node is not None:
+        # Layer 19: First Repetition (Warning: One more time makes it a draw)
+        # is_repetition(2) means the current position has now appeared twice.
+        if node.rep_count() >= 2:
+            tensor[19, :, :] = 1.0
 
-    # Layer 20: Threefold Repetition (The game is currently a draw)
-    # is_repetition(3) means the position has appeared three times.
-    if board.is_repetition(3):
-        tensor[20, :, :] = 1.0
+        # Layer 20: Threefold Repetition (The game is currently a draw)
+        # is_repetition(3) means the position has appeared three times.
+        if node.rep_count() >= 3:
+            tensor[20, :, :] = 1.0
 
     return torch.from_numpy(tensor)
 
