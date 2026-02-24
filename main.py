@@ -13,9 +13,12 @@ def play_match(mcts: MCTS):
     print(board)
     print("-" * 30)
 
+
     while not board.is_game_over(claim_draw=True):
         # 1. MCTS runs its 800 simulations
         print(f"Thinking for {"WHITE" if board.turn == chess.WHITE else "BLACK"}... ", end="", flush=True)
+        if mcts.terminate_early():
+            break
         best_move = mcts.search(board)
         board.push(best_move)
         mcts.update_with_move(best_move)  # Keep the tree synced!
@@ -29,6 +32,10 @@ def play_match(mcts: MCTS):
     # 4. Game Over Evaluation
     print("Game Over!")
     outcome = board.outcome(claim_draw=True)
+    if not outcome:
+        print("Result: 1/2-1/2 (Draw)")
+        print(f"Reason: early termination")
+        return
 
     if outcome.winner == chess.WHITE:
         print("Result: 1-0 (White Wins)")

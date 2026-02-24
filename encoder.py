@@ -5,7 +5,7 @@ import numpy as np
 import MCTS
 
 
-def board_to_tensor(board, node: MCTS.MCTSNode):
+def board_to_tensor(board, repcount: int = 1) -> torch.Tensor:
     # 21 layers: 12 (pieces) + 1 (turn) + 4 (castling) + 1 (50-move) + 1 (en passant) + 2 (repetition)
     tensor = np.zeros((21, 8, 8), dtype=np.float32)
 
@@ -39,39 +39,17 @@ def board_to_tensor(board, node: MCTS.MCTSNode):
         row, col = divmod(board.ep_square, 8)
         tensor[18, row, col] = 1.0
 
-    if node is not None:
-        # Layer 19: First Repetition (Warning: One more time makes it a draw)
-        # is_repetition(2) means the current position has now appeared twice.
-        if node.rep_count() >= 2:
-            tensor[19, :, :] = 1.0
+    # Layer 19: First Repetition (Warning: One more time makes it a draw)
+    # is_repetition(2) means the current position has now appeared twice.
+    if repcount >= 2:
+        tensor[19, :, :] = 1.0
 
-        # Layer 20: Threefold Repetition (The game is currently a draw)
-        # is_repetition(3) means the position has appeared three times.
-        if node.rep_count() >= 3:
-            tensor[20, :, :] = 1.0
+    # Layer 20: Threefold Repetition (The game is currently a draw)
+    # is_repetition(3) means the position has appeared three times.
+    if repcount >= 3:
+        tensor[20, :, :] = 1.0
 
     return torch.from_numpy(tensor)
-
-from chess import polyglot
-
-def get_state_key(board) -> tuple[int, int, int]:
-    """
-    Creates a perfectly unique MCTS key combining the physical state
-    (Zobrist), the 50-move rule, and the repetition count.
-    :param board: chess board
-    """
-    physical_hash: int = polyglot.zobrist_hash(board)
-    halfmove_clock: int = board.halfmove_clock
-
-    # Check repetition status
-    rep_count = 1
-    if board.is_repetition(3):
-        rep_count = 3
-    elif board.is_repetition(2):
-        rep_count = 2
-
-    # A tuple key is fast, memory-efficient, and perfectly state-aware
-    return physical_hash, halfmove_clock, rep_count
 
 
 def move_to_plane(move):

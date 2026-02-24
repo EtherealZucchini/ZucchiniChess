@@ -9,7 +9,13 @@ import torch.nn as nn
 import chess.polyglot as polyglot
 
 class MCTS:
-    def __init__(self, *, body: nn.Module, value_head: nn.Module, policy_head: nn.Module, num_simulations=50, device='cuda'):
+    def __init__(self, *,
+                 body: nn.Module,
+                 value_head: nn.Module,
+                 policy_head: nn.Module,
+                 num_simulations=200,
+                 max_turns=200,
+                 device='cuda'):
         self.nn_body = body.to(device)
         self.policy_head = policy_head.to(device)
         self.value_head = value_head.to(device)
@@ -17,6 +23,11 @@ class MCTS:
         self.transposition_table = {}
         self.device = device
         self.root: MCTSNode | None = None
+        self._turn = 1
+        self._max_turns = max_turns
+
+    def terminate_early(self):
+        return self._turn >= self._max_turns
 
     def search(self, initial_board: chess.Board):
         """
@@ -46,13 +57,11 @@ class MCTS:
     def get_best_move(self, root_node: MCTSNode):
         max_visit_count = 0
         candidate = None
-        for move, child in root_node.children.items():
+        for move, (child, prior) in root_node.children.items():
             if child.visit_count > max_visit_count:
                 max_visit_count = child.visit_count
                 candidate = move
         return candidate
-
-
 
     def select_leaf(self, root_node: MCTSNode, global_board: chess.Board) -> tuple[MCTSNode, list[MCTSNode]]:
         """
@@ -75,6 +84,8 @@ class MCTS:
         return current_node, search_path
 
     def backpropagate(self, search_path: list[MCTSNode], value: float):
+        if len(search_path) >1: print(len(search_path))
+
         for node in reversed(search_path):
             node.value_sum += value
             node.visit_count += 1
@@ -87,9 +98,9 @@ class MCTS:
             """
         # 1. TERMINAL CHECK: Is the game over?
         # claim_draw=True forces python-chess to recognize 50-move and 3-fold rules
-        if leaf_node.rep_counter[leaf_node.physical_hash] >= 3 or search_board.halfmove_clock >= 100:
-            # TODO: I think it doesn't matter outside the training phase,
-            #  but since we return immediately the NN never sees a threefold repetition state, check this
+        if (leaf_node.rep_counter[leaf_node.physical_hash] >= 3
+                or search_board.halfmove_clock >= 100
+                or self._turn >= self._max_turns):
             return 0.0
         outcome = search_board.outcome(claim_draw=False)
         if outcome is not None:
@@ -102,7 +113,7 @@ class MCTS:
 
         # 2. EVALUATE: Query the Neural Network
         # Convert the python-chess board into our 19-plane tensor
-        state_tensor = encoder.board_to_tensor(search_board, leaf_node).unsqueeze(0).to(self.device) # Add batch dimension
+        state_tensor = encoder.board_to_tensor(search_board, leaf_node.rep_count()).unsqueeze(0).to(self.device) # Add batch dimension
         legal_mask = encoder.get_legal_move_mask(search_board).unsqueeze(0).to(self.device)
 
         # Disable gradient tracking for massive speedup during self-play
@@ -120,11 +131,17 @@ class MCTS:
         action_probs = encoder.decode_policy(policy_logits, search_board)
 
         for move, prob in action_probs.items():
-            # Get the new repetition state for this child (using our O(1) logic)
-            child_node = expand_node(search_board, prior=prob, parent=leaf_node, move=move, parent_rep_counter=leaf_node.rep_counter)
+            # Pass the transposition table to the expansion function
+            child_node = expand_node(
+                global_board=search_board,
+                prior=prob,
+                move=move,
+                parent_rep_counter=leaf_node.rep_counter,
+                transposition_table=self.transposition_table
+            )
 
             # Attach it to the tree
-            leaf_node.children[move] = child_node
+            leaf_node.children[move] = (child_node, prob)
 
         # 4. Return the predicted value to be sent up the tree
         return value
@@ -133,81 +150,77 @@ class MCTS:
         """
         Steps the MCTS root forward along the played move, preserving history.
         """
+        self._turn += 1
         if self.root is not None and move in self.root.children:
-            self.root = self.root.children[move]
-            self.root.parent = None  # Sever the parent link to free memory
+            self.root, _ = self.root.children[move]
         else:
             # If the move wasn't in our tree (e.g., turn 1, or an unsearched opponent move),
             # we force a hard reset.
             self.root = None
+        self.transposition_table.clear()
 
     def _get_or_create_node(self, initial_board: chess.Board):
-        # 1. If we already persisted the tree, just use it!
         if self.root is not None:
             return self.root
 
-        # 2. Otherwise, we are starting from a blank slate
         physical_hash = polyglot.zobrist_hash(initial_board)
         root_counter = collections.Counter()
         root_counter[physical_hash] = 1
 
-        # NOTE: If you resume a game from a mid-game PGN, an empty Counter() here
-        # won't catch repetitions from before the engine took over.
-        # But for from-scratch games, this is perfect.
-        root = MCTSNode(
-            prior=1.0,
-            physical_hash=physical_hash,
-            halfmove_clock=initial_board.halfmove_clock,
-            to_play=1 if initial_board.turn == chess.WHITE else -1,
-            rep_counter=root_counter,
-            parent=None,
-            move_from_parent=None
-        )
+        root = MCTSNode(physical_hash=physical_hash, halfmove_clock=initial_board.halfmove_clock,
+                        rep_counter=root_counter)
+
         self.root = root
+
+        # Register the new root in the transposition table
+        self.transposition_table[root._state_tuple] = root
+
         return root
 
 
-def expand_node(global_board: chess.Board, parent: MCTSNode, move: chess.Move, parent_rep_counter: collections.Counter, prior) :
+def expand_node(global_board: chess.Board,
+                move: chess.Move,
+                parent_rep_counter: collections.Counter,
+                prior: float,
+                transposition_table: dict):
     """
-    Executes a move and calculates the new repetition state in O(1) time.
-    :returns: child_hash, child_counter, is_twofold, is_threefold
+    Executes a move, checks the transposition table, and either returns the cached node
+    or creates a new one in O(1) time.
     """
-
-
     # 1. Inherit the parent's repetition history
     child_counter = parent_rep_counter.copy()
 
     # 2. Make the move
     global_board.push(move)
 
-
-    # 3. The Golden Rule: Clear the dictionary on irreversible moves!
+    # 3. Clear the dictionary on irreversible moves
     if global_board.halfmove_clock == 0:
-        # Doesn't account for castling rights, but the Zobrist hash accounts for it, so it will have a different hash
         child_counter.clear()
 
-    # 4. Generate the current state's unique integer
+    # 4. Generate state identifiers
     current_hash = polyglot.zobrist_hash(global_board)
-
-    # 5. Increment the count for this specific position
-    # we are explicitly counting repeated positions, not nodes, so it is ok that we don't include
     child_counter[current_hash] += 1
+    halfmove_clock = global_board.halfmove_clock
 
-    to_play = 1 if global_board.turn == chess.WHITE else -1
-    child = MCTSNode(prior=prior, physical_hash=current_hash, halfmove_clock=global_board.halfmove_clock, to_play=to_play, rep_counter=child_counter, parent=parent, move_from_parent=move)
+    # 5. Check the Transposition Table!
+    state_tuple = (current_hash, halfmove_clock, child_counter[current_hash])
+    if state_tuple in transposition_table:
+        global_board.pop()
+        return transposition_table[state_tuple]
 
-    # Undo the move to leave the original board intact for other branches
+    # 6. If not found, create the new node
+    child = MCTSNode(physical_hash=current_hash, halfmove_clock=halfmove_clock, rep_counter=child_counter)
+
+    # 7. Add the new node to the cache before returning
+    transposition_table[state_tuple] = child
+
     global_board.pop()
-
     return child
 
 
 class MCTSNode(object):
-    def __init__(self, *, prior: float, physical_hash: int, halfmove_clock: int, to_play: int, rep_counter: collections.Counter, parent: MCTSNode | None,
-                 move_from_parent: chess.Move | None):
-        self.parent = parent
-        self.move_from_parent = move_from_parent
-        self.children: dict[chess.Move, MCTSNode] = {}
+    def __init__(self, *, physical_hash: int, halfmove_clock: int, rep_counter: collections.Counter):
+        self.children: dict[chess.Move, tuple[MCTSNode, float]] = {}
 
         # Calculate the unique state identifiers once upon creation
         self.physical_hash = physical_hash
@@ -216,9 +229,7 @@ class MCTSNode(object):
         self._state_tuple = (self.physical_hash, self.halfmove_clock, rep_counter[self.physical_hash])
         self._hash = hash(self._state_tuple)
 
-        self.prior = prior
         self.visit_count = 0
-        self.to_play = to_play
         self.value_sum = 0
         self.rep_counter = rep_counter # counter for visited nodes in the tree
 
@@ -261,7 +272,7 @@ class MCTSNode(object):
         pb_c = math.log((self.visit_count + pb_c_base + 1.0) / pb_c_base) + pb_c_init
         pb_c *= math.sqrt(self.visit_count)
 
-        for move, child in self.children.items():
+        for move, (child, prior) in self.children.items():
             # 1. EXPLOITATION: Q-Value
             # We negate the child's value because it is from the opponent's perspective.
             # If the child has 0 visits, its Q-value is 0.0.
@@ -269,7 +280,7 @@ class MCTSNode(object):
 
             # 2. EXPLORATION: U-Value
             # Prior * sqrt(Parent Visits) / (1 + Child Visits)
-            u_value = pb_c * (child.prior / (child.visit_count + 1.0))
+            u_value = pb_c * (prior / (child.visit_count + 1.0))
 
             # 3. COMBINE
             puct_score = q_value + u_value

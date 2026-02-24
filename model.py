@@ -39,16 +39,18 @@ class ChessNetBody(nn.Module):
         return x
 
 class ChessNetValue(nn.Module):
-    def __init__(self, num_res_blocks=4):
+    def __init__(self, channels=64):
         super().__init__()
-        # Value Head: Predicts win/loss (-1 to 1)
-        self.value_conv = nn.Conv2d(64, 1, kernel_size=1)
-        self.value_fc = nn.Linear(64, 1)
+        self.value_conv = nn.Conv2d(channels, 1, kernel_size=1)
+        self.bn = nn.BatchNorm2d(1)
+        self.fc1 = nn.Linear(64, 256)
+        self.fc2 = nn.Linear(256, 1)
+
     def forward(self, x):
-        # Global average pooling and value prediction
-        v = F.relu(self.value_conv(x))
+        v = F.relu(self.bn(self.value_conv(x)))
         v = v.view(-1, 64)
-        v = torch.tanh(self.value_fc(v))  # Squashes output to [-1, 1]
+        v = F.relu(self.fc1(v))
+        v = torch.tanh(self.fc2(v))
         return v
 
 
@@ -81,3 +83,16 @@ class ChessNetPolicy(nn.Module):
         policy = F.softmax(logits, dim=1)
 
         return policy
+
+class ChessNet(nn.Module):
+    def __init__(self, channels=21, num_res_blocks=4):
+        super().__init__()
+        self.body = ChessNetBody(num_res_blocks=4)
+        self.value = ChessNetValue(channels=64)
+        self.policy = ChessNetPolicy(channels=64)
+
+    def forward(self, x, legal_moves_mask):
+        latent = self.body(x, legal_moves_mask)
+        value = self.value(latent)
+        policy = self.policy(latent, legal_moves_mask)
+        return value, policy
