@@ -1,12 +1,57 @@
 import chess
-import numpy as np
 import torch
-import torch.nn.functional as F
 
+import MCTS
 import encoder
 from model import ChessNetBody, ChessNetValue, ChessNetPolicy
 
-if __name__ == '__main__':
+
+def play_match(mcts: MCTS):
+    board = chess.Board()
+
+    print("Initializing AlphaZero Prototype...")
+    print(board)
+    print("-" * 30)
+
+    while not board.is_game_over(claim_draw=True):
+        # 1. MCTS runs its 800 simulations
+        print(f"Thinking for {board.turn}... ", end="", flush=True)
+        best_move = mcts.search(board)
+
+        # 2. Apply the chosen move to the physical board
+        board.push(best_move)
+
+        # 3. Display the board state
+        print(f"Played {best_move}")
+        print(board)
+        print("-" * 30)
+
+    # 4. Game Over Evaluation
+    print("Game Over!")
+    outcome = board.outcome(claim_draw=True)
+
+    if outcome.winner == chess.WHITE:
+        print("Result: 1-0 (White Wins)")
+    elif outcome.winner == chess.BLACK:
+        print("Result: 0-1 (Black Wins)")
+    else:
+        print("Result: 1/2-1/2 (Draw)")
+        print(f"Reason: {outcome.termination.name}")
+
+
+if __name__ == "__main__":
+    # Initialize your PyTorch networks
+    # (Assuming you have a master ChessNet or the three separate modules)
+    # body = ...
+    # value_head = ...
+    # policy_head = ...
+
+    # Initialize the MCTS wrapper
+    # mcts = MCTS(body, value_head, policy_head, num_simulations=800)
+
+    # Start the game
+    # play_match(mcts)
+
     if torch.cuda.is_available():
         device = torch.device('cuda')
     else:
@@ -18,11 +63,5 @@ if __name__ == '__main__':
     board = chess.Board()
     print(board.fen())
 
-    state = encoder.board_to_tensor(board).view(-1, 21, 8, 8).to(device)
-    print(state.shape)
-    fwd = body.forward(state)
-    v = value.forward(fwd)
-    print(v)
-
-    key = encoder.get_state_key(board)
-    print(key)
+    mcts = MCTS.MCTS(body=body, policy_head=policy, value_head=value)
+    play_match(mcts)

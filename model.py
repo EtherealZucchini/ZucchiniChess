@@ -64,7 +64,6 @@ class ChessNetPolicy(nn.Module):
         self.conv2 = nn.Conv2d(channels, 73, kernel_size=1)
 
     def forward(self, x, legal_moves_mask):
-        print(x.shape)
         # 1. Pass through the hidden policy layer
         x = F.relu(self.bn1(self.conv1(x)))
 
