@@ -1,12 +1,12 @@
 import chess
 import torch
 
-import MCTS
+import mcts
 import encoder
 from model import ChessNet
 
 
-def play_match(mcts: MCTS):
+def play_match(mcts: mcts.MCTS):
     board = chess.Board()
 
     print("Initializing AlphaZero Prototype...")
@@ -69,5 +69,5 @@ if __name__ == "__main__":
     board = chess.Board()
     print(board.fen())
 
-    mcts = MCTS.MCTS(nn=nn)
-    play_match(mcts)
+    tree = mcts.MCTS(nn=nn)
+    play_match(tree)

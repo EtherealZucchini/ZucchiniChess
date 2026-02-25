@@ -9,6 +9,7 @@ import torch.nn as nn
 import chess.polyglot as polyglot
 
 
+
 class MCTS:
     def __init__(self, *,
                  nn: nn.Module,
@@ -22,6 +23,9 @@ class MCTS:
         self.root: MCTSNode | None = None
         self._turn = 1
         self._max_turns = max_turns
+        from helpers import AlphaZeroConfig
+
+        self.config = AlphaZeroConfig()
 
     def search(self, initial_board: chess.Board):
         """
@@ -97,6 +101,9 @@ class MCTS:
 
             # Attach it to the tree
             leaf_node.children[move] = (child_node, prob)
+            if leaf_node == self.root:
+                from helpers import add_exploration_noise
+                add_exploration_noise(self.config, leaf_node)
 
         # 4. Return the predicted value to be sent up the tree
         return value

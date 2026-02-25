@@ -2,7 +2,7 @@ import torch
 import chess
 import numpy as np
 
-import MCTS
+import mcts
 
 
 def board_to_tensor(board, repcount: int = 1) -> torch.Tensor:
