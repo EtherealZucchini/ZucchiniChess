@@ -8,6 +8,7 @@ import chess
 import torch.nn as nn
 import chess.polyglot as polyglot
 
+
 class MCTS:
     def __init__(self, *,
                  nn: nn.Module,
@@ -21,9 +22,6 @@ class MCTS:
         self.root: MCTSNode | None = None
         self._turn = 1
         self._max_turns = max_turns
-
-    def terminate_early(self):
-        return self._turn >= self._max_turns
 
     def search(self, initial_board: chess.Board):
         """
@@ -39,52 +37,16 @@ class MCTS:
             search_board = initial_board.copy(stack=False)
 
             # 2. SELECTION: Walk down the tree, pushing moves to search_board
-            leaf_node, search_path = self.select_leaf(root_node, search_board)
+            leaf_node, search_path = select_leaf(root_node, search_board)
 
             # 3. EXPANSION & EVALUATION: Pass the synced search_board to the NN
             value = self.evaluate_and_expand(leaf_node, search_board)
 
             # 4. BACKPROPAGATION: Walk back up the search_path updating N and Q
-            self.backpropagate(search_path, value)
+            backpropagate(search_path, value)
 
         # After 800 simulations, pick the child of the root with the highest N (visit count)
-        return self.get_best_move(root_node)
-
-    def get_best_move(self, root_node: MCTSNode):
-        max_visit_count = 0
-        candidate = None
-        for move, (child, prior) in root_node.children.items():
-            if child.visit_count > max_visit_count:
-                max_visit_count = child.visit_count
-                candidate = move
-        return candidate
-
-    def select_leaf(self, root_node: MCTSNode, global_board: chess.Board) -> tuple[MCTSNode, list[MCTSNode]]:
-        """
-        Traverses down the tree using PUCT, syncing the global_board as it goes.
-        Returns the leaf node and the path taken to get there.
-        """
-        current_node = root_node
-        search_path = [current_node]
-
-        while current_node.children:
-            # Pick best child via PUCT formula
-            best_move, next_node = current_node.get_best_puct_child()
-
-            # Keep our single board in sync with our mathematical traversal
-            global_board.push(best_move)
-
-            current_node = next_node
-            search_path.append(current_node)
-
-        return current_node, search_path
-
-    def backpropagate(self, search_path: list[MCTSNode], value: float):
-
-        for node in reversed(search_path):
-            node.value_sum += value
-            node.visit_count += 1
-            value = -value
+        return get_best_move(root_node)
 
     def evaluate_and_expand(self, leaf_node: MCTSNode, search_board: chess.Board) -> float:
         """
@@ -139,19 +101,6 @@ class MCTS:
         # 4. Return the predicted value to be sent up the tree
         return value
 
-    def update_with_move(self, move: chess.Move):
-        """
-        Steps the MCTS root forward along the played move, preserving history.
-        """
-        self._turn += 1
-        if self.root is not None and move in self.root.children:
-            self.root, _ = self.root.children[move]
-        else:
-            # If the move wasn't in our tree (e.g., turn 1, or an unsearched opponent move),
-            # we force a hard reset.
-            self.root = None
-        self.transposition_table.clear()
-
     def _get_or_create_node(self, initial_board: chess.Board):
         if self.root is not None:
             return self.root
@@ -169,6 +118,137 @@ class MCTS:
         self.transposition_table[root._state_tuple] = root
 
         return root
+
+    def update_with_move(self, move: chess.Move):
+        """
+        Steps the MCTS root forward along the played move, preserving history.
+        """
+        self._turn += 1
+        if self.root is not None and move in self.root.children:
+            self.root, _ = self.root.children[move]
+        else:
+            # If the move wasn't in our tree (e.g., turn 1, or an unsearched opponent move),
+            # we force a hard reset.
+            self.root = None
+        self.transposition_table.clear()
+
+    def terminate_early(self):
+        return self._turn >= self._max_turns
+
+
+class MCTSNode(object):
+    def __init__(self, *, physical_hash: int, halfmove_clock: int, rep_counter: collections.Counter):
+        self.children: dict[chess.Move, tuple[MCTSNode, float]] = {}
+
+        # Calculate the unique state identifiers once upon creation
+        self.physical_hash = physical_hash
+        self.halfmove_clock = halfmove_clock
+
+        self._state_tuple = (self.physical_hash, self.halfmove_clock, rep_counter[self.physical_hash])
+        self._hash = hash(self._state_tuple)
+
+        self.visit_count = 0
+        self.value_sum = 0
+        self.rep_counter = rep_counter # counter for visited nodes in the tree
+
+
+
+    def get_best_puct_child(self) -> tuple[chess.Move, MCTSNode]:
+        best_puct = -float('inf')
+        best_move = None
+        best_child = None
+
+        # DeepMind's dynamic PUCT constants for chess (from the pseudocode)
+        pb_c_base = 19652.0
+        pb_c_init = 1.25
+
+
+        # Calculate the dynamic exploration base factor once for the parent
+        pb_c = math.log((self.visit_count + pb_c_base + 1.0) / pb_c_base) + pb_c_init
+        pb_c *= math.sqrt(self.visit_count)
+
+        for move, (child, prior) in self.children.items():
+            # 1. EXPLOITATION: Q-Value
+            # We negate the child's value because it is from the opponent's perspective.
+            # If the child has 0 visits, its Q-value is 0.0.
+            q_value = -child.value() if child.visit_count > 0 else 0.0
+
+            # 2. EXPLORATION: U-Value
+            # Prior * sqrt(Parent Visits) / (1 + Child Visits)
+            u_value = pb_c * (prior / (child.visit_count + 1.0))
+
+            # 3. COMBINE
+            puct_score = q_value + u_value
+
+            # Keep track of the highest score
+            if puct_score > best_puct:
+                best_puct = puct_score
+                best_move = move
+                best_child = child
+
+        return best_move, best_child
+
+    def rep_count(self):
+        """
+        Helper function to calculate get the number of repetitions using own physical hash
+        :return:
+        """
+        return self.rep_counter[self.physical_hash]
+
+
+    def value(self):
+        if self.visit_count == 0:
+            return 0
+        return self.value_sum / self.visit_count
+
+    def __hash__(self):
+        return self._hash
+
+    def __eq__(self, other):
+
+        if not isinstance(other, MCTSNode):
+            return False
+
+        return self._state_tuple == other._state_tuple
+
+
+def get_best_move(root_node: MCTSNode):
+    max_visit_count = 0
+    candidate = None
+    for move, (child, prior) in root_node.children.items():
+        if child.visit_count > max_visit_count:
+            max_visit_count = child.visit_count
+            candidate = move
+    return candidate
+
+
+def select_leaf(root_node: MCTSNode, global_board: chess.Board) -> tuple[MCTSNode, list[MCTSNode]]:
+    """
+    Traverses down the tree using PUCT, syncing the global_board as it goes.
+    Returns the leaf node and the path taken to get there.
+    """
+    current_node = root_node
+    search_path = [current_node]
+
+    while current_node.children:
+        # Pick best child via PUCT formula
+        best_move, next_node = current_node.get_best_puct_child()
+
+        # Keep our single board in sync with our mathematical traversal
+        global_board.push(best_move)
+
+        current_node = next_node
+        search_path.append(current_node)
+
+    return current_node, search_path
+
+
+def backpropagate(search_path: list[MCTSNode], value: float):
+
+    for node in reversed(search_path):
+        node.value_sum += value
+        node.visit_count += 1
+        value = -value
 
 
 def expand_node(global_board: chess.Board,
@@ -209,79 +289,3 @@ def expand_node(global_board: chess.Board,
 
     global_board.pop()
     return child
-
-
-class MCTSNode(object):
-    def __init__(self, *, physical_hash: int, halfmove_clock: int, rep_counter: collections.Counter):
-        self.children: dict[chess.Move, tuple[MCTSNode, float]] = {}
-
-        # Calculate the unique state identifiers once upon creation
-        self.physical_hash = physical_hash
-        self.halfmove_clock = halfmove_clock
-
-        self._state_tuple = (self.physical_hash, self.halfmove_clock, rep_counter[self.physical_hash])
-        self._hash = hash(self._state_tuple)
-
-        self.visit_count = 0
-        self.value_sum = 0
-        self.rep_counter = rep_counter # counter for visited nodes in the tree
-
-    def rep_count(self):
-        """
-        Helper function to calculate get the number of repetitions using own physical hash
-        :return:
-        """
-        return self.rep_counter[self.physical_hash]
-
-    def expanded(self):
-        return len(self.children)
-
-    def value(self):
-        if self.visit_count == 0:
-            return 0
-        return self.value_sum / self.visit_count
-
-    def __hash__(self):
-        return self._hash
-
-    def __eq__(self, other):
-
-        if not isinstance(other, MCTSNode):
-            return False
-
-        return self._state_tuple == other._state_tuple
-
-    def get_best_puct_child(self) -> tuple[chess.Move, MCTSNode]:
-        best_puct = -float('inf')
-        best_move = None
-        best_child = None
-
-        # DeepMind's dynamic PUCT constants for chess (from the pseudocode)
-        pb_c_base = 19652.0
-        pb_c_init = 1.25
-
-
-        # Calculate the dynamic exploration base factor once for the parent
-        pb_c = math.log((self.visit_count + pb_c_base + 1.0) / pb_c_base) + pb_c_init
-        pb_c *= math.sqrt(self.visit_count)
-
-        for move, (child, prior) in self.children.items():
-            # 1. EXPLOITATION: Q-Value
-            # We negate the child's value because it is from the opponent's perspective.
-            # If the child has 0 visits, its Q-value is 0.0.
-            q_value = -child.value() if child.visit_count > 0 else 0.0
-
-            # 2. EXPLORATION: U-Value
-            # Prior * sqrt(Parent Visits) / (1 + Child Visits)
-            u_value = pb_c * (prior / (child.visit_count + 1.0))
-
-            # 3. COMBINE
-            puct_score = q_value + u_value
-
-            # Keep track of the highest score
-            if puct_score > best_puct:
-                best_puct = puct_score
-                best_move = move
-                best_child = child
-
-        return best_move, best_child
