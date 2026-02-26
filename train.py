@@ -70,53 +70,55 @@ def generate_batches_from_pgn(pgn_path: str, batch_size: int = 32):
                     states, masks, target_values, target_policies = [], [], [], []
 
 
-def train_network(model_path="chessnet_v1.pth", pgn_path="training_data.pgn"):
+def train_network(model_path="chessnet_v1.pth", pgn_path="training_data.pgn", num_epochs=3):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Training on {device}...")
 
     # Initialize the master network and optimizer
-    model = ChessNet().to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)  # weight_decay is L2 regularization
+    model = ChessNet(channels=128, num_res_blocks=10).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-4)  # weight_decay is L2 regularization
     mse_loss_fn = nn.MSELoss()
 
     # Put model in training mode (activates BatchNorm tracking)
     model.train()
 
-    # Make sure you have a file named 'training_data.pgn' in your directory
-    # You can download database dumps from Lichess or KingBase
-    batch_generator = generate_batches_from_pgn(pgn_path=pgn_path, batch_size=64)
 
-    for batch_idx, (states, masks, target_values, target_policies) in enumerate(batch_generator):
-        states = states.to(device)
-        masks = masks.to(device)
-        target_values = target_values.to(device)
-        target_policies = target_policies.to(device)
+    for epoch_idx in range(num_epochs):
+        print(f"====== Epoch {epoch_idx} ======")
+        # Make sure you have a file named 'training_data.pgn' in your directory
+        # You can download database dumps from Lichess or KingBase
+        batch_generator = generate_batches_from_pgn(pgn_path=pgn_path, batch_size=64)
+        for batch_idx, (states, masks, target_values, target_policies) in enumerate(batch_generator):
+            states = states.to(device)
+            masks = masks.to(device)
+            target_values = target_values.to(device)
+            target_policies = target_policies.to(device)
 
-        # 1. Zero gradients
-        optimizer.zero_grad()
+            # 1. Zero gradients
+            optimizer.zero_grad()
 
-        # 2. Forward pass
+            # 2. Forward pass
 
-        pred_values, pred_policies = model(states, masks)
+            pred_values, pred_policies = model(states, masks)
 
-        # 3. Calculate Value Loss (Mean Squared Error)
-        value_loss = mse_loss_fn(pred_values, target_values)
+            # 3. Calculate Value Loss (Mean Squared Error)
+            value_loss = mse_loss_fn(pred_values, target_values)
 
-        # 4. Calculate Policy Loss (Cross Entropy)
-        # Because your policy head outputs softmax probabilities, we use: -sum(target * log(pred))
-        # We add 1e-8 to prevent taking the log of absolute zero, which returns NaN
-        policy_loss = -torch.sum(target_policies * torch.log(pred_policies + 1e-8), dim=1).mean()
+            # 4. Calculate Policy Loss (Cross Entropy)
+            # Because your policy head outputs softmax probabilities, we use: -sum(target * log(pred))
+            # We add 1e-8 to prevent taking the log of absolute zero, which returns NaN
+            policy_loss = -torch.sum(target_policies * torch.log(pred_policies + 1e-8), dim=1).mean()
 
-        # 5. Combine losses
-        total_loss = value_loss + policy_loss
+            # 5. Combine losses
+            total_loss = value_loss + policy_loss
 
-        # 6. Backpropagate and step
-        total_loss.backward()
-        optimizer.step()
+            # 6. Backpropagate and step
+            total_loss.backward()
+            optimizer.step()
 
-        if batch_idx % 10 == 0:
-            print(
-                f"Batch {batch_idx} | Total Loss: {total_loss.item():.4f} (V_loss: {value_loss.item():.4f}, P_loss: {policy_loss.item():.4f})")
+            if batch_idx % 10 == 0:
+                print(
+                    f"Batch {batch_idx} | Total Loss: {total_loss.item():.4f} (V_loss: {value_loss.item():.4f}, P_loss: {policy_loss.item():.4f})")
 
     # Save the trained weights!
     torch.save(model.state_dict(), model_path)
@@ -124,5 +126,6 @@ def train_network(model_path="chessnet_v1.pth", pgn_path="training_data.pgn"):
 
 
 if __name__ == "__main__":
-    path = os.path.join(os.getcwd(), "Grischuk.pgn")
-    train_network(pgn_path=path)
+    data_path = os.path.join(os.getcwd(), "Carlsen.pgn")
+    save_path = os.path.join(os.getcwd(), "chessnet_v4.pth")
+    train_network(pgn_path=data_path, model_path=save_path)

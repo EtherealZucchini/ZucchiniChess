@@ -6,7 +6,7 @@ import encoder
 from model import ChessNet
 
 
-def play_match(mcts: mcts.MCTS):
+def play_match(engine1: mcts.MCTS, engine2: mcts.MCTS = None):
     board = chess.Board()
 
     print("Initializing AlphaZero Prototype...")
@@ -17,11 +17,16 @@ def play_match(mcts: mcts.MCTS):
     while not board.is_game_over(claim_draw=True):
         # 1. MCTS runs its 800 simulations
         print(f"Thinking for {"WHITE" if board.turn == chess.WHITE else "BLACK"}... ", end="", flush=True)
-        if mcts.terminate_early():
+        if engine1.terminate_early():
             break
-        best_move = mcts.search(board)
+
+        player = engine2 if engine2 is not None and board.turn == chess.BLACK else engine1
+
+        best_move = player.search(board)
         board.push(best_move)
-        mcts.update_with_move(best_move)  # Keep the tree synced!
+        engine1.update_with_move(best_move)  # Keep the tree synced!
+        if engine2:
+            engine2.update_with_move(best_move)
 
 
         # 3. Display the board state
@@ -65,9 +70,13 @@ if __name__ == "__main__":
         device = torch.device('cpu')
 
     nn = ChessNet().to(device)
-    nn.load_state_dict(torch.load("chessnet_v1.pth"))
+    nn.load_state_dict(torch.load("chessnet_v2.pth"))
+
+    nn2 = ChessNet().to(device)
+    nn2.load_state_dict(torch.load("chessnet_v3.pth"))
+
     board = chess.Board()
-    print(board.fen())
 
     tree = mcts.MCTS(nn=nn)
-    play_match(tree)
+    tree2 = mcts.MCTS(nn=nn2)
+    play_match(tree, tree2)

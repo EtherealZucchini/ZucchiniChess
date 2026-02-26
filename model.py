@@ -20,14 +20,14 @@ class ResBlock(nn.Module):
 
 
 class ChessNetBody(nn.Module):
-    def __init__(self, num_res_blocks=4):
+    def __init__(self, num_res_blocks=4, channels=64):
         super().__init__()
         # Initial Convolution to expand 12 channels to 64
-        self.start_conv = nn.Conv2d(21, 64, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(64)
+        self.start_conv = nn.Conv2d(21, channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
 
         # Stack of Residual Blocks
-        self.res_blocks = nn.ModuleList([ResBlock(64) for _ in range(num_res_blocks)])
+        self.res_blocks = nn.ModuleList([ResBlock(channels) for _ in range(num_res_blocks)])
 
 
 
@@ -85,11 +85,11 @@ class ChessNetPolicy(nn.Module):
         return policy
 
 class ChessNet(nn.Module):
-    def __init__(self, channels=21, num_res_blocks=4):
+    def __init__(self, channels=64, num_res_blocks=4):
         super().__init__()
-        self.body = ChessNetBody(num_res_blocks=4)
-        self.value = ChessNetValue(channels=64)
-        self.policy = ChessNetPolicy(channels=64)
+        self.body = ChessNetBody(num_res_blocks=num_res_blocks, channels=channels)
+        self.value = ChessNetValue(channels=channels)
+        self.policy = ChessNetPolicy(channels=channels)
 
     def forward(self, x, legal_moves_mask):
         latent = self.body(x)

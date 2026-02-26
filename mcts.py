@@ -30,10 +30,12 @@ class MCTS:
     def search(self, initial_board: chess.Board):
         """
         The main entry point. Runs the simulation loop and returns the best move.
+        We select a leaf node and evaluate and expand along its legal children.
         """
         # Create the root node for the current real-world board state
 
         root_node: MCTSNode = self._get_or_create_node(initial_board)
+
 
         for _ in range(self.num_simulations):
             # 1. We must use a COPY of the board for the search phase,
@@ -93,7 +95,6 @@ class MCTS:
             # Pass the transposition table to the expansion function
             child_node = expand_node(
                 global_board=search_board,
-                prior=prob,
                 move=move,
                 parent_rep_counter=leaf_node.rep_counter,
                 transposition_table=self.transposition_table
@@ -161,6 +162,9 @@ class MCTSNode(object):
 
 
     def get_best_puct_child(self) -> tuple[chess.Move, MCTSNode]:
+        """"
+        Statically evaluates children of this node, computing PUCT scores using the PUCT constants and neural network evaluations
+        """
         best_puct = -float('inf')
         best_move = None
         best_child = None
@@ -261,7 +265,6 @@ def backpropagate(search_path: list[MCTSNode], value: float):
 def expand_node(global_board: chess.Board,
                 move: chess.Move,
                 parent_rep_counter: collections.Counter,
-                prior: float,
                 transposition_table: dict):
     """
     Executes a move, checks the transposition table, and either returns the cached node
